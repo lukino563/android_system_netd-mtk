@@ -44,12 +44,15 @@
 #include "cutils/properties.h"
 
 #include "SoftapController.h"
+#include <dirent.h>
 
 using android::base::StringPrintf;
 using android::base::WriteStringToFile;
 
 static const char HOSTAPD_CONF_FILE[]    = "/data/misc/wifi/hostapd.conf";
 static const char HOSTAPD_BIN_FILE[]    = "/system/bin/hostapd";
+static const char HOSTAPD_SOCKETS_DIR[]    = "/data/misc/wifi/sockets";
+static const char WIFI_HOSTAPD_GLOBAL_CTRL_IFACE[] = "/data/misc/wifi/hostapd/global";
 
 SoftapController::SoftapController()
     : mPid(0) {}
@@ -57,8 +60,10 @@ SoftapController::SoftapController()
 SoftapController::~SoftapController() {
 }
 
-int SoftapController::startSoftap() {
+int SoftapController::startSoftap(bool global_ctrl_iface) {
     pid_t pid = 1;
+    DIR *dir = NULL;
+    int ret;
 
     if (mPid) {
         ALOGE("SoftAP is already running");
@@ -76,9 +81,17 @@ int SoftapController::startSoftap() {
 
     if (!pid) {
         ensure_entropy_file_exists();
-        if (execl(HOSTAPD_BIN_FILE, HOSTAPD_BIN_FILE,
-                  "-e", WIFI_ENTROPY_FILE,
-                  HOSTAPD_CONF_FILE, (char *) NULL)) {
+        if (global_ctrl_iface) {
+            ret = execl(HOSTAPD_BIN_FILE, HOSTAPD_BIN_FILE,
+                        "-e", WIFI_ENTROPY_FILE, "-ddd",
+                        "-g", WIFI_HOSTAPD_GLOBAL_CTRL_IFACE,
+                        HOSTAPD_CONF_FILE, (char *)NULL);
+        } else {
+            ret = execl(HOSTAPD_BIN_FILE, HOSTAPD_BIN_FILE,
+                        "-e", WIFI_ENTROPY_FILE, HOSTAPD_CONF_FILE,
+                        (char *)NULL);
+        }
+        if (ret) {
             ALOGE("execl failed (%s)", strerror(errno));
         }
         ALOGE("SoftAP failed to start");
@@ -87,6 +100,20 @@ int SoftapController::startSoftap() {
         mPid = pid;
         ALOGD("SoftAP started successfully");
         usleep(AP_BSS_START_DELAY);
+        dir = opendir(HOSTAPD_SOCKETS_DIR);
+        if (NULL == dir && errno == ENOENT) {
+            mkdir(HOSTAPD_SOCKETS_DIR, S_IRWXU|S_IRWXG|S_IRWXO);
+            chown(HOSTAPD_SOCKETS_DIR, AID_WIFI, AID_WIFI);
+            chmod(HOSTAPD_SOCKETS_DIR, S_IRWXU|S_IRWXG);
+        } else {
+            if (dir != NULL) { /* Directory already exists */
+                ALOGD("%s already exists", HOSTAPD_SOCKETS_DIR);
+                closedir(dir);
+            }
+            if (errno == EACCES) {
+                ALOGE("Cant open %s , check permissions ", HOSTAPD_SOCKETS_DIR);
+            }
+        }
     }
     return ResponseCode::SoftapStatusResult;
 }

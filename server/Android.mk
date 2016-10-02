@@ -47,6 +47,11 @@ LOCAL_C_INCLUDES := \
 
 LOCAL_CLANG := true
 LOCAL_CPPFLAGS := -std=c++11 -Wall -Werror
+
+ifeq ($(BOARD_USES_LIBC_WRAPPER),true)
+LOCAL_CPPFLAGS += -DUSE_WRAPPER
+endif
+
 LOCAL_MODULE := netd
 
 LOCAL_INIT_RC := netd.rc
@@ -94,6 +99,7 @@ LOCAL_SRC_FILES := \
         NetworkController.cpp \
         PhysicalNetwork.cpp \
         PppController.cpp \
+        QtiConnectivityAdapter.cpp \
         ResolverController.cpp \
         RouteController.cpp \
         SockDiag.cpp \
@@ -105,8 +111,17 @@ LOCAL_SRC_FILES := \
         main.cpp \
         oem_iptables_hook.cpp \
         binder/android/net/metrics/IDnsEventListener.aidl \
+        QtiDataController.cpp \
 
 LOCAL_AIDL_INCLUDES := $(LOCAL_PATH)/binder
+
+ifeq ($(BOARD_USES_QCOM_HARDWARE),true)
+ifeq ($(BOARD_HAS_QCOM_WLAN), true)
+  LOCAL_CFLAGS += -DQSAP_WLAN
+  LOCAL_SHARED_LIBRARIES += libqsap_sdk
+  LOCAL_C_INCLUDES += $(TARGET_OUT_HEADERS)/sdk/softap/include
+endif
+endif
 
 include $(BUILD_EXECUTABLE)
 
@@ -130,7 +145,7 @@ include $(BUILD_EXECUTABLE)
 include $(CLEAR_VARS)
 LOCAL_MODULE := netd_unit_test
 LOCAL_CFLAGS := -Wall -Werror -Wunused-parameter
-LOCAL_C_INCLUDES := system/netd/server system/netd/server/binder system/core/logwrapper/include
+LOCAL_C_INCLUDES := system/netd/server system/netd/server/binder system/core/logwrapper/include system/netd/include
 LOCAL_SRC_FILES := \
         NetdConstants.cpp IptablesBaseTest.cpp \
         BandwidthController.cpp BandwidthControllerTest.cpp \

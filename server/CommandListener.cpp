@@ -47,6 +47,12 @@
 #include "FirewallController.h"
 #include "RouteController.h"
 #include "UidRanges.h"
+#include "QtiConnectivityAdapter.h"
+#include "QtiDataController.h"
+
+#ifdef QSAP_WLAN
+#include "qsap_api.h"
+#endif
 
 #include <string>
 #include <vector>
@@ -198,6 +204,9 @@ CommandListener::CommandListener() :
     registerLockingCmd(new ClatdCmd());
     registerLockingCmd(new NetworkCommand());
     registerLockingCmd(new StrictCmd());
+    registerLockingCmd(getQtiConnectivityCmd(this));
+
+    initializeDataControllerLib();
 
     /*
      * This is the only time we touch top-level chains in iptables; controllers
@@ -675,11 +684,13 @@ int CommandListener::NatCmd::runCommand(SocketClient *cli,
     if (!strcmp(argv[1], "enable") && argc >= 4) {
         rc = gCtls->natCtrl.enableNat(argv[2], argv[3]);
         if(!rc) {
+            natStarted(argv[2], argv[3]);
             /* Ignore ifaces for now. */
             rc = gCtls->bandwidthCtrl.setGlobalAlertInForwardChain();
         }
     } else if (!strcmp(argv[1], "disable") && argc >= 4) {
         /* Ignore ifaces for now. */
+        natStopped(argv[2], argv[3]);
         rc = gCtls->bandwidthCtrl.removeGlobalAlertInForwardChain();
         rc |= gCtls->natCtrl.disableNat(argv[2], argv[3]);
     } else {
@@ -756,6 +767,9 @@ int CommandListener::SoftapCmd::runCommand(SocketClient *cli,
                                         int argc, char **argv) {
     int rc = ResponseCode::SoftapStatusResult;
     char *retbuf = NULL;
+#ifdef QSAP_WLAN
+    char qccmd = 0;
+#endif
 
     if (gCtls == nullptr) {
       cli->sendMsg(ResponseCode::ServiceStartFailed, "SoftAP is not available", false);
@@ -767,10 +781,33 @@ int CommandListener::SoftapCmd::runCommand(SocketClient *cli,
         return 0;
     }
 
+#ifdef QSAP_WLAN
+
+    if (!strcmp(argv[1], "qccmd")) {
+        rc = qsap_hostd_exec(argc, argv);
+        qccmd = 1;
+    }
+    else if (!strcmp(argv[1], "startap")) {
+        rc = qsap_prepare_softap();
+        if (!rc) {
+            rc = gCtls->softapCtrl.startSoftap(qsap_is_fst_enabled());
+            if (rc != ResponseCode::SoftapStatusResult) {
+                ALOGE("failed to start SoftAP ResponseCode : %d", rc);
+                qsap_unprepare_softap();
+            }
+        } else {
+            ALOGE("qsap_prepare_softap failed");
+            rc = ResponseCode::ServiceStartFailed;
+        }
+    } else if (!strcmp(argv[1], "stopap")) {
+        rc = gCtls->softapCtrl.stopSoftap();
+        qsap_unprepare_softap();
+#else
     if (!strcmp(argv[1], "startap")) {
         rc = gCtls->softapCtrl.startSoftap();
     } else if (!strcmp(argv[1], "stopap")) {
         rc = gCtls->softapCtrl.stopSoftap();
+#endif
     } else if (!strcmp(argv[1], "fwreload")) {
         rc = gCtls->softapCtrl.fwReloadSoftap(argc, argv);
     } else if (!strcmp(argv[1], "status")) {
@@ -780,11 +817,39 @@ int CommandListener::SoftapCmd::runCommand(SocketClient *cli,
         free(retbuf);
         return 0;
     } else if (!strcmp(argv[1], "set")) {
+#ifdef QSAP_WLAN
+        rc = qsapsetSoftap(argc, argv);
+        qccmd = 1;
+#else
         rc = gCtls->softapCtrl.setSoftap(argc, argv);
+#endif
+#ifdef QSAP_WLAN
+    } else if (!strcmp(argv[1], "create")) {
+        if (argv[2]) {
+            ALOGD("Override softap create command");
+            rc = qsap_add_or_remove_interface(argv[2], 1);
+        }
+    } else if (!strcmp(argv[1], "remove")) {
+        if (argv[2]) {
+            ALOGD("Override softap remove command");
+            rc = qsap_add_or_remove_interface(argv[2], 0);
+       }
+#endif
     } else {
         cli->sendMsg(ResponseCode::CommandSyntaxError, "Unrecognized SoftAP command", false);
         return 0;
     }
+
+#ifdef QSAP_WLAN
+    if (qccmd) {
+        if (!rc) {
+            cli->sendMsg(ResponseCode::CommandOkay, "Softap operation succeeded", false);
+        } else {
+            cli->sendMsg(ResponseCode::OperationFailed, "Softap operation failed", true);
+        }
+        return 0;
+    }
+#endif
 
     if (rc >= 400 && rc < 600)
       cli->sendMsg(rc, "SoftAP command has failed", false);
@@ -1166,6 +1231,24 @@ int CommandListener::BandwidthControlCmd::runCommand(SocketClient *cli, int argc
         }
         return 0;
 
+    }
+    if (!strcmp(argv[1], "blockAllData")) {
+        if (argc < 2) {
+            sendGenericSyntaxError(cli, "zerobalanceblock");
+            return 0;
+        }
+        int rc = blockAllData();
+        sendGenericOkFail(cli, rc);
+        return 0;
+    }
+    if (!strcmp(argv[1], "unblockAllData")) {
+        if (argc < 2) {
+            sendGenericSyntaxError(cli, "zerobalance unblock");
+            return 0;
+        }
+        int rc = unblockAllData();
+        sendGenericOkFail(cli, rc);
+        return 0;
     }
 
     cli->sendMsg(ResponseCode::CommandSyntaxError, "Unknown bandwidth cmd", false);
